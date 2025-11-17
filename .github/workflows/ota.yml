@@ -60,7 +60,7 @@ jobs:
           -d text="⬇️ Starting download..."
 
       # -------------------------------------------------
-      # DOWNLOAD WITH 5% PROGRESS
+      # DOWNLOAD WITH 5% PROGRESS (NO 100%)
       # -------------------------------------------------
       - name: ⬇️ Download OTA (with progress)
         env:
@@ -81,7 +81,7 @@ jobs:
               Pct=$((100 * Done / Total))
               Step=$((Pct / 5))
 
-              # No 100% message
+              # No 100% DM
               if [ "$Step" -ne "$Last" ] && [ "$Pct" -lt 100 ]; then
                 Bars=$(printf "%0.s█" $(seq 1 $Step))
                 Spaces=$(printf "%0.s-" $(seq 1 $((20-Step))))
@@ -138,22 +138,31 @@ jobs:
             -d parse_mode="Markdown"
 
       # -------------------------------------------------
-      # GITHUB RELEASE UPLOAD (REAL FIX)
+      # FIXED RELEASE CREATION (NO 404)
       # -------------------------------------------------
-      - name: 📤 Create GitHub Release
-        id: create_release
-        run: |
-          gh release create "${{ github.event.inputs.tag }}" -t "${{ github.event.inputs.tag }}" -n "Automatic OTA Split Release" || true
+      - name: 📤 Ensure GitHub Release exists
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ github.event.inputs.tag }}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release exists: $TAG"
+          else
+            echo "Creating release: $TAG"
+            gh release create "$TAG" -t "$TAG" -n "Automatic OTA Split Release"
+          fi
 
+      # -------------------------------------------------
+      # FIXED MULTI-FILE UPLOAD
+      # -------------------------------------------------
       - name: 📤 Upload Split Parts to GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          RELEASE_ID=$(gh api repos/${{ github.repository }}/releases/tags/${{ github.event.inputs.tag }} --jq '.id')
+          TAG="${{ github.event.inputs.tag }}"
+          RELEASE_ID=$(gh api repos/${{ github.repository }}/releases/tags/$TAG --jq '.id')
 
-          for f in ${{ github.event.inputs.tag }}.7z.*; do
+          for f in $TAG.7z.*; do
             echo "Uploading $f ..."
             gh api \
               --method POST \
@@ -190,7 +199,7 @@ jobs:
           done
 
       # -------------------------------------------------
-      # FINAL DM
+      # DM: SUCCESS
       # -------------------------------------------------
       - name: 🎉 DM — Pipeline Completed
         if: ${{ success() }}
@@ -204,10 +213,24 @@ jobs:
           -d parse_mode="Markdown"
 
       # -------------------------------------------------
+      # DM: FAILURE (THIS WAS MISSING — FIXED)
+      # -------------------------------------------------
+      - name: ❌ DM — Pipeline Failed
+        if: ${{ failure() }}
+        env:
+          TG_TOKEN: ${{ secrets.TG_TOKEN }}
+          TG_DM: ${{ secrets.TG_DM }}
+        run: |
+          curl -s -X POST "https://api.telegram.org/bot$TG_TOKEN/sendMessage" \
+          -d chat_id="$TG_DM" \
+          -d text="❌ *Pipeline FAILED!* Check GitHub Actions logs." \
+          -d parse_mode="Markdown"
+
+      # -------------------------------------------------
       # CLEANUP
       # -------------------------------------------------
       - name: 🧹 Cleanup
         if: ${{ always() }}
         run: |
-          rm -rf *.zip *.7z.*
+          rm -rf *.zip *.7z.* ota.zip
           echo "Cleanup complete."
