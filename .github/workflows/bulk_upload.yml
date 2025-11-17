@@ -2,14 +2,13 @@ name: OnePlus Bulk OTA Archiver
 
 on:
   workflow_dispatch:
-    # No inputs needed, the list is hardcoded below
 
 jobs:
   process_otas:
     runs-on: ubuntu-latest
     steps:
       # -------------------------------------------------
-      # 1. CHECKOUT (Required for GH CLI)
+      # 1. CHECKOUT
       # -------------------------------------------------
       - name: 📥 Checkout Repo
         uses: actions/checkout@v3
@@ -73,11 +72,10 @@ jobs:
           for item in "${OTAS[@]}"; do
             count=$((count+1))
             
-            # Split string by Pipe | delimiter
+            # Split string
             VERSION="${item%%|*}"
             URL="${item##*|}"
             
-            # Define Names
             TAG="CPH2661IN-${VERSION}"
             BASE_NAME="CPH2661IN-${VERSION}"
             
@@ -114,23 +112,38 @@ jobs:
 
             # 4. Create Release
             echo "📦 Creating GitHub Release..."
-            NOTES="**Region:** INDIA ( CPH 2661IN )"$'\n'"**Version:** ${VERSION}"
+            
+            # --- NEW RELEASE NOTES FORMAT ---
+            NOTES="**Region:** INDIA ( CPH 2661IN ) 🇮🇳"$'\n'"**Version:** ${VERSION} 📱"$'\n'"**Type:** Official OTA 📦"$'\n\n'"**BOOT & INIT_BOOT of this ${VERSION} can be found here :** https://t.me/boot_imgs_nord4/2"
+            
             gh release create "$TAG" -t "OnePlus OTA - ${VERSION}" -n "$NOTES"
 
-            # 5. Upload
+            # 5. Upload Loop (With Start/Done DMs)
             echo "📤 Uploading assets..."
+            part_num=0
+            
+            # Enable nullglob in case of weird file matches
+            shopt -s nullglob
+            
             for f in split_output/*; do
+               part_num=$((part_num+1))
+               fname=$(basename "$f")
+               
+               # --- DM: UPLOAD START ---
+               curl -s -X POST "https://api.telegram.org/bot$TG_TOKEN/sendMessage" \
+                -d chat_id="$TG_DM" \
+                -d text="🚀 *Upload Started*: $fname" \
+                -d parse_mode="Markdown" > /dev/null
+
+               # Upload (Force overwrite)
                gh release upload "$TAG" "$f" --clobber
+               
+               # --- DM: UPLOAD DONE ---
+               curl -s -X POST "https://api.telegram.org/bot$TG_TOKEN/sendMessage" \
+                -d chat_id="$TG_DM" \
+                -d text="✅ *Upload Done*: $fname" \
+                -d parse_mode="Markdown" > /dev/null
             done
-
-            # Calculate parts count for DM
-            PARTS_COUNT=$(ls split_output/* | wc -l)
-
-            # --- DM: UPLOAD FINISHED ---
-            curl -s -X POST "https://api.telegram.org/bot$TG_TOKEN/sendMessage" \
-              -d chat_id="$TG_DM" \
-              -d text="✅ *Release Created!*%0ATag: \`$TAG\`%0AUploaded Parts: *$PARTS_COUNT*" \
-              -d parse_mode="Markdown" > /dev/null
 
             # 6. Cleanup
             echo "🧹 Cleaning up..."
