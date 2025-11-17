@@ -48,7 +48,7 @@ jobs:
           -d parse_mode="Markdown"
 
       # -------------------------------------------------
-      # DM: DOWNLOAD STARTING
+      # DOWNLOAD
       # -------------------------------------------------
       - name: 💬 DM — Download Starting
         env:
@@ -59,9 +59,6 @@ jobs:
           -d chat_id="$TG_DM" \
           -d text="⬇️ Starting download..."
 
-      # -------------------------------------------------
-      # DOWNLOAD WITH 5% PROGRESS (NO 100%)
-      # -------------------------------------------------
       - name: ⬇️ Download OTA (with progress)
         env:
           TG_TOKEN: ${{ secrets.TG_TOKEN }}
@@ -99,6 +96,10 @@ jobs:
           TG_TOKEN: ${{ secrets.TG_TOKEN }}
           TG_DM: ${{ secrets.TG_DM }}
         run: |
+          if [ ! -f ota.zip ]; then
+             echo "❌ Error: ota.zip not found"
+             exit 1
+          fi
           SIZE=$(du -h ota.zip | cut -f1)
           curl -s -X POST "https://api.telegram.org/bot$TG_TOKEN/sendMessage" \
           -d chat_id="$TG_DM" \
@@ -106,11 +107,10 @@ jobs:
           -d parse_mode="Markdown"
 
       # -------------------------------------------------
-      # RENAME + SPLIT
+      # RENAME + SPLIT INTO DIRECTORY
       # -------------------------------------------------
-      - name: Rename OTA to TAG.zip
-        run: |
-          mv ota.zip "${{ github.event.inputs.tag }}.zip"
+      - name: Rename OTA
+        run: mv ota.zip "${{ github.event.inputs.tag }}.zip"
 
       - name: 💬 DM — Split Starting
         env:
@@ -121,25 +121,29 @@ jobs:
           -d chat_id="$TG_DM" \
           -d text="✂️ Starting 7z split..."
 
-      - name: ✂️ Split Using 7z (No Recompression)
+      - name: ✂️ Split Using 7z (Into 'split_output' folder)
         run: |
-          7z a -t7z -mx=0 -v1990m "${{ github.event.inputs.tag }}.7z" "${{ github.event.inputs.tag }}.zip"
+          # 1. Create the directory
+          mkdir -p split_output
+          
+          # 2. Run 7z, pointing the output file INSIDE the directory
+          7z a -t7z -mx=0 -v1990m "split_output/${{ github.event.inputs.tag }}.7z" "${{ github.event.inputs.tag }}.zip"
 
       - name: 💬 DM — Split Finished
         env:
           TG_TOKEN: ${{ secrets.TG_TOKEN }}
           TG_DM: ${{ secrets.TG_DM }}
         run: |
-          # Check how many parts were created (works for single or multi)
-          shopt -s nullglob
-          PARTS=$(ls ${{ github.event.inputs.tag }}.7z* | wc -l)
+          # Count files in the directory
+          COUNT=$(ls split_output/* | wc -l)
+          
           curl -s -X POST "https://api.telegram.org/bot$TG_TOKEN/sendMessage" \
             -d chat_id="$TG_DM" \
-            -d text="✅ *Split Finished*\nParts created: *$PARTS*" \
+            -d text="✅ *Split Finished*\nParts created: *$COUNT*" \
             -d parse_mode="Markdown"
 
       # -------------------------------------------------
-      # REQUIRED CHECKOUT BEFORE GH CLI
+      # REQUIRED CHECKOUT
       # -------------------------------------------------
       - name: 📥 Checkout Repo
         uses: actions/checkout@v3
@@ -147,7 +151,7 @@ jobs:
           fetch-depth: 0
 
       # -------------------------------------------------
-      # FIXED RELEASE CREATION
+      # CREATE RELEASE
       # -------------------------------------------------
       - name: 📤 Ensure GitHub Release exists
         env:
@@ -162,7 +166,7 @@ jobs:
           fi
 
       # -------------------------------------------------
-      # FIXED MULTI-FILE UPLOAD TO RELEASE
+      # UPLOAD TO RELEASE (ITERATE DIRECTORY)
       # -------------------------------------------------
       - name: 📤 Upload Split Parts to GitHub Release
         env:
@@ -171,22 +175,21 @@ jobs:
           TAG="${{ github.event.inputs.tag }}"
           RELEASE_ID=$(gh api repos/${{ github.repository }}/releases/tags/$TAG --jq '.id')
 
-          # Prevent errors if no files match and enable broad matching
-          shopt -s nullglob
-
-          # UPDATED WILDCARD: Matches ".7z" (single) and ".7z.001" (split)
-          for f in "$TAG".7z*; do
+          # Loop through EVERYTHING in the split_output folder
+          for f in split_output/*; do
             echo "Uploading $f ..."
+            fname=$(basename "$f")
+            
             gh api \
               --method POST \
               -H "Accept: application/vnd.github+json" \
               -H "Content-Type: application/octet-stream" \
-              /repos/${{ github.repository }}/releases/$RELEASE_ID/assets?name=$(basename "$f") \
+              /repos/${{ github.repository }}/releases/$RELEASE_ID/assets?name="$fname" \
               --input "$f"
           done
 
       # -------------------------------------------------
-      # TELEGRAM UPLOAD
+      # UPLOAD TO TELEGRAM (ITERATE DIRECTORY)
       # -------------------------------------------------
       - name: 📡 Upload to Telegram Channel
         env:
@@ -194,11 +197,14 @@ jobs:
           TG_CHAT: ${{ secrets.TG_CHAT }}
           TG_DM: ${{ secrets.TG_DM }}
         run: |
-          shopt -s nullglob
           i=1
           
-          # UPDATED WILDCARD
-          for f in "${{ github.event.inputs.tag }}".7z*; do
+          # Loop through EVERYTHING in the split_output folder
+          # Using sort to ensure 001 uploads before 002
+          for f in $(ls split_output/* | sort); do
+            fname=$(basename "$f")
+            echo "Processing $fname..."
+
             curl -s -X POST "https://api.telegram.org/bot$TG_TOKEN/sendMessage" \
               -d chat_id="$TG_DM" \
               -d text="📡 Uploading part $i..." \
@@ -248,5 +254,5 @@ jobs:
       - name: 🧹 Cleanup
         if: ${{ always() }}
         run: |
-          rm -rf *.zip *.7z* ota.zip
+          rm -rf split_output *.zip ota.zip
           echo "Cleanup complete."
