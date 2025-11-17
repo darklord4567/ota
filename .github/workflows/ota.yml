@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       ota_url:
-        description: "Direct OTA download link"
+        description: "Direct OTA link"
         required: true
       tag:
         description: "Release Tag (ex: N4-14.320-IND)"
@@ -15,11 +15,15 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # -------------------------------------------------
+      # FREE DISK
+      # -------------------------------------------------
       - name: 🧹 Free Disk Space (Aggressive)
         run: |
           sudo rm -rf /usr/share/dotnet || true
           sudo rm -rf /usr/local/lib/android || true
           sudo rm -rf /opt/ghc || true
+          sudo rm -rf /usr/local/share/powershell || true
           sudo docker system prune -af || true
           sudo apt-get autoremove -y
           sudo apt-get clean
@@ -28,34 +32,37 @@ jobs:
       - name: 📦 Install Tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y aria2 p7zip-full jq
+          sudo apt-get install -y aria2 p7zip-full jq gh
 
-      # -----------------------------
-      # DM: Pipeline Start
-      # -----------------------------
+      # -------------------------------------------------
+      # DM: START
+      # -------------------------------------------------
       - name: 💬 DM — Pipeline Started
         env:
           TG_TOKEN: ${{ secrets.TG_TOKEN }}
           TG_DM: ${{ secrets.TG_DM }}
         run: |
           curl -s -X POST "https://api.telegram.org/bot$TG_TOKEN/sendMessage" \
-            -d chat_id="$TG_DM" \
-            -d text="🚀 *OTA Pipeline Started*\nTag: *${{ github.event.inputs.tag }}*" \
-            -d parse_mode="Markdown"
+          -d chat_id="$TG_DM" \
+          -d text="🚀 *Pipeline Started*\nTag: *${{ github.event.inputs.tag }}*" \
+          -d parse_mode="Markdown"
 
-      # -----------------------------
-      # DOWNLOAD + PROGRESS
-      # -----------------------------
+      # -------------------------------------------------
+      # DM: DOWNLOAD STARTING
+      # -------------------------------------------------
       - name: 💬 DM — Download Starting
         env:
           TG_TOKEN: ${{ secrets.TG_TOKEN }}
           TG_DM: ${{ secrets.TG_DM }}
         run: |
           curl -s -X POST "https://api.telegram.org/bot$TG_TOKEN/sendMessage" \
-            -d chat_id="$TG_DM" \
-            -d text="⬇️ Starting download..."
+          -d chat_id="$TG_DM" \
+          -d text="⬇️ Starting download..."
 
-      - name: ⬇️ Download with Progress
+      # -------------------------------------------------
+      # DOWNLOAD WITH 5% PROGRESS
+      # -------------------------------------------------
+      - name: ⬇️ Download OTA (with progress)
         env:
           TG_TOKEN: ${{ secrets.TG_TOKEN }}
           TG_DM: ${{ secrets.TG_DM }}
@@ -74,7 +81,8 @@ jobs:
               Pct=$((100 * Done / Total))
               Step=$((Pct / 5))
 
-              if [ "$Step" -ne "$Last" ]; then
+              # No 100% message
+              if [ "$Step" -ne "$Last" ] && [ "$Pct" -lt 100 ]; then
                 Bars=$(printf "%0.s█" $(seq 1 $Step))
                 Spaces=$(printf "%0.s-" $(seq 1 $((20-Step))))
                 curl -s -X POST "https://api.telegram.org/bot$TG_TOKEN/sendMessage" \
@@ -95,13 +103,13 @@ jobs:
           SIZE=$(du -h ota.zip | cut -f1)
           curl -s -X POST "https://api.telegram.org/bot$TG_TOKEN/sendMessage" \
           -d chat_id="$TG_DM" \
-          -d text="✅ Download Finished.\nSize: *$SIZE*" \
+          -d text="✅ Download Finished\nSize: *$SIZE*" \
           -d parse_mode="Markdown"
 
-      # -------------------------------
-      # 7Z SPLIT (NO PROGRESS, ONLY START + END)
-      # -------------------------------
-      - name: Rename OTA to Tag
+      # -------------------------------------------------
+      # RENAME + SPLIT
+      # -------------------------------------------------
+      - name: Rename OTA to TAG
         run: |
           mv ota.zip "${{ github.event.inputs.tag }}.zip"
 
@@ -111,8 +119,8 @@ jobs:
           TG_DM: ${{ secrets.TG_DM }}
         run: |
           curl -s -X POST "https://api.telegram.org/bot$TG_TOKEN/sendMessage" \
-            -d chat_id="$TG_DM" \
-            -d text="✂️ Starting 7z split..."
+          -d chat_id="$TG_DM" \
+          -d text="✂️ Starting 7z split..."
 
       - name: ✂️ Split Using 7z (No Recompression)
         run: |
@@ -129,27 +137,35 @@ jobs:
             -d text="✅ *Split Finished*\nParts created: *$PARTS*" \
             -d parse_mode="Markdown"
 
-      # -------------------------------
-      # GITHUB RELEASE UPLOAD
-      # -------------------------------
+      # -------------------------------------------------
+      # GITHUB RELEASE UPLOAD (REAL FIX)
+      # -------------------------------------------------
       - name: 📤 Create GitHub Release
-        uses: softprops/action-gh-release@v1
-        with:
-          tag_name: ${{ github.event.inputs.tag }}
+        id: create_release
+        run: |
+          gh release create "${{ github.event.inputs.tag }}" -t "${{ github.event.inputs.tag }}" -n "Automatic OTA Split Release" || true
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: 📤 Upload Parts to Release
-        uses: softprops/action-gh-release@v1
-        with:
-          tag_name: ${{ github.event.inputs.tag }}
-          files: ${{ github.event.inputs.tag }}.7z.*
+      - name: 📤 Upload Split Parts to GitHub Release
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          RELEASE_ID=$(gh api repos/${{ github.repository }}/releases/tags/${{ github.event.inputs.tag }} --jq '.id')
 
-      # -------------------------------
+          for f in ${{ github.event.inputs.tag }}.7z.*; do
+            echo "Uploading $f ..."
+            gh api \
+              --method POST \
+              -H "Accept: application/vnd.github+json" \
+              -H "Content-Type: application/octet-stream" \
+              /repos/${{ github.repository }}/releases/$RELEASE_ID/assets?name=$(basename "$f") \
+              --input "$f"
+          done
+
+      # -------------------------------------------------
       # TELEGRAM UPLOAD
-      # -------------------------------
+      # -------------------------------------------------
       - name: 📡 Upload to Telegram Channel
         env:
           TG_TOKEN: ${{ secrets.TG_TOKEN }}
@@ -173,36 +189,25 @@ jobs:
             i=$((i+1))
           done
 
-      # -------------------------------
+      # -------------------------------------------------
       # FINAL DM
-      # -------------------------------
-      - name: 🎉 DM — Pipeline Success
+      # -------------------------------------------------
+      - name: 🎉 DM — Pipeline Completed
         if: ${{ success() }}
         env:
           TG_TOKEN: ${{ secrets.TG_TOKEN }}
           TG_DM: ${{ secrets.TG_DM }}
         run: |
           curl -s -X POST "https://api.telegram.org/bot$TG_TOKEN/sendMessage" \
-            -d chat_id="$TG_DM" \
-            -d text="🎉 *Pipeline Completed Successfully!*" \
-            -d parse_mode="Markdown"
+          -d chat_id="$TG_DM" \
+          -d text="🎉 *Pipeline Completed Successfully!*" \
+          -d parse_mode="Markdown"
 
-      - name: ❌ DM — Pipeline Failed
-        if: ${{ failure() }}
-        env:
-          TG_TOKEN: ${{ secrets.TG_TOKEN }}
-          TG_DM: ${{ secrets.TG_DM }}
-        run: |
-          curl -s -X POST "https://api.telegram.org/bot$TG_TOKEN/sendMessage" \
-            -d chat_id="$TG_DM" \
-            -d text="❌ Pipeline FAILED. Check logs." \
-            -d parse_mode="Markdown"
-
-      # -------------------------------
+      # -------------------------------------------------
       # CLEANUP
-      # -------------------------------
+      # -------------------------------------------------
       - name: 🧹 Cleanup
         if: ${{ always() }}
         run: |
-          rm -rf *.zip *.7z.* ota.zip
+          rm -rf *.zip *.7z.*
           echo "Cleanup complete."
